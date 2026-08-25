@@ -6,3 +6,5 @@ __pycache__/
 *_geometric_*/*
 !/Images/*
 *.png
+# derived artefacts: surrogate caches are rebuilt by optcompare.build_cache
+*.npz

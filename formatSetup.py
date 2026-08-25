@@ -58,15 +58,39 @@ for h in [0.04,0.06,0.08,0.12,0.14,0.16]:
             temp['pseudo_Iw']  = np.sqrt(temp['ww-reynolds-stress'])/temp['x-velocity']
             temp['pseudo_Iuv'] = np.sqrt(np.abs(temp['uv-reynolds-stress']))/temp['x-velocity']
             
+            # The two pseudo-coordinates place the upstream planes in the
+            # DOWNSTREAM domain's frame, whose origin is the end of the
+            # roughness canopy at upstreamLength = lBox + 0.5*spacing + lFetch
+            # = 2.1 + 0.15 + 2.7 = 4.95 m.  So the downstream inlet (domain
+            # x = 0) is at -4.95 and the end of the ALF box (domain x = 2.1)
+            # is at -2.85.  rDictInflow is the upstream station that feeds the
+            # inlet and is therefore -4.95; rDictALF sits 2.1 m (7 rows)
+            # further downstream and is -2.85.
+            #
+            # These two assignments were swapped, which mislabelled the inlet
+            # profile as the ALF target and vice versa.  Three independent
+            # checks fix the orientation:
+            #   * generateInflow.py writes x = -4.95 to *_inflow_input.txt and
+            #     x = -2.85 to *_ALF_input.txt;
+            #   * the superseded path at the bottom of this file assigned
+            #     inflow_df -> -4.95 and ALF_df -> -2.85;
+            #   * in the committed GPRDatabase, x = -2.85 carries a larger
+            #     momentum deficit and more turbulence aloft than x = -4.95,
+            #     i.e. it is the further-downstream station.
             if pfx == rDictInflow[str(r)]:
-                temp['x']=-2.85
+                temp['x'] = -4.95
             elif pfx == rDictALF[str(r)]:
-                temp['x']=-4.95
-                
+                temp['x'] = -2.85
+            else:
+                raise ValueError(f'prefix {pfx} matches neither station for r={r}')
+
             temp['y'] = np.loadtxt(directory+pfx+'_avg_u.00100000.collapse_width.dat',skiprows = 3)[:,3]
             temp['z'] = 0
             temp['h'] = h
             temp['r'] = r
+            # True row index in the upstream canopy.  The label r names the ALF
+            # station; the inlet station sits 7 rows (2.1 m) upstream of it.
+            temp['n'] = r if pfx == rDictALF[str(r)] else r - 7
             temp['y-velocity'] = 0
             temp['z-velocity'] = 0
             temp['uw-reynolds-stress'] = 0
@@ -101,6 +125,8 @@ for h in [0.04,0.06,0.08,0.12,0.14,0.16]:
             temp['z'] = 0
             temp['h'] = h
             temp['r'] = r
+            # Downstream stations have no upstream row index.
+            temp['n'] = np.nan
             temp['y-velocity'] = 0
             temp['z-velocity'] = 0
             temp['uw-reynolds-stress'] = 0
@@ -112,7 +138,7 @@ for h in [0.04,0.06,0.08,0.12,0.14,0.16]:
                     , columns=['x','y','z','x-velocity','y-velocity','z-velocity','x-velocity-magnitude'
                               ,'uu-reynolds-stress','vv-reynolds-stress','ww-reynolds-stress'
                               ,'uv-reynolds-stress','uw-reynolds-stress','vw-reynolds-stress'
-                              ,'pseudo_Iu','pseudo_Iv','pseudo_Iw','pseudo_Iuv','h','r'], index=False)
+                              ,'pseudo_Iu','pseudo_Iv','pseudo_Iw','pseudo_Iuv','h','r','n'], index=False)
         
         #inflow_df = (pd.read_csv('../../TIGTestMatrixLong/InflowProfiles/Dragh'+'{0:.2f}'.format(h)+'_'+rDictInflow[str(r)]+'_inflow_turbulence.txt',sep='\t'))
         #inflow_df = (pd.read_csv('../../TIGTestMatrixLong/InflowProfiles/Dragh'+'{0:.2f}'.format(h)+'_'+rDictInflow[str(r)]+'_inflow_turbulence.txt',sep='\t'))

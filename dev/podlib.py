@@ -45,6 +45,39 @@ from sklearn.gaussian_process.kernels import (                    # noqa: E402
 DATABASE = './GPRDatabase'
 REF_VELOCITY = 15.0
 
+# --------------------------------------------------------------------------
+# Upstream stations
+#
+# The database labels the two upstream planes with pseudo-coordinates that
+# locate them in the *downstream* domain's frame, whose origin is the end of
+# the roughness canopy (upstreamLength = 2.1 + 0.15 + 2.7 = 4.95 m):
+#
+#   x = -4.95  ->  downstream inlet (domain x = 0),      feeds INLET_PROFILE
+#   x = -2.85  ->  end of the ALF box (domain x = 2.1),  feeds DATA_ALF
+#
+# In the upstream canopy the two planes are the same quantity sampled 7 rows
+# (2.1 m) apart, so they belong in one model indexed by the true row number.
+# The label r names the ALF station; the inlet station is 7 rows upstream:
+#
+#   n(-2.85) = r        n(-4.95) = r - 7
+#
+# Consistency check against formatSetup's lookup tables, which place the ALF
+# station of label 52 at 23.65 m and the inlet station at 21.55 m: the two
+# differ by 2.1 m = 7 rows at the 0.3 m row spacing, and consecutive labels
+# differ by 5 rows = 1.5 m, both of which the relation above reproduces.
+# --------------------------------------------------------------------------
+X_INLET, X_ALF = -4.95, -2.85
+ROW_OFFSET = 7
+
+
+def row_index(r, x):
+    """True upstream row index for a database entry labelled (r, x)."""
+    if np.isclose(x, X_ALF):
+        return float(r)
+    if np.isclose(x, X_INLET):
+        return float(r) - ROW_OFFSET
+    raise ValueError(f'x={x} is not an upstream station')
+
 
 def build_snapshots(pairs, xList, QoIs, yGrid, yMax=1.0, database=DATABASE,
                     refvel=REF_VELOCITY):
@@ -72,6 +105,39 @@ def build_snapshots(pairs, xList, QoIs, yGrid, yMax=1.0, database=DATABASE,
 
     meta = pd.DataFrame(rows)
     X = {q: np.asarray(blocks[q]) for q in QoIs}
+    return meta, X
+
+
+def build_upstream_snapshots(pairs, QoIs, yGrid, yMax=1.5, database=DATABASE,
+                             refvel=REF_VELOCITY):
+    """Snapshots for the upstream database, indexed by true row number.
+
+    Both upstream planes of every (h, r) file are pooled, so each h
+    contributes twice as many profiles as the number of r labels: for
+    h in {0.04, 0.08, 0.12, 0.16} the labels {52,62,72,82,92} yield rows
+    {45,52,55,62,65,72,75,82,85,92}, ten distinct stations instead of five.
+
+    Returns (meta, X) with meta columns ['h', 'n', 'r', 'plane'], where
+    'plane' records which boundary condition the profile feeds.
+    """
+    QoIs = list(QoIs)
+    rows, blocks = [], {q: [] for q in QoIs}
+
+    for h, r in np.asarray(pairs, dtype=float):
+        df = loadData([h], [X_INLET, X_ALF], [r], yMax, database, refvel, yGrid)
+        for x in (X_INLET, X_ALF):
+            sub = df[np.abs(df['x'] - x) < 1e-9].sort_values('y')
+            if len(sub) != len(yGrid):
+                raise RuntimeError(
+                    f'h={h} r={r} x={x}: got {len(sub)} rows, want {len(yGrid)}')
+            rows.append({'h': h, 'n': row_index(r, x), 'r': r,
+                         'plane': 'inlet' if x == X_INLET else 'alf'})
+            for q in QoIs:
+                blocks[q].append(sub[q].to_numpy())
+
+    meta = pd.DataFrame(rows).sort_values(['h', 'n']).reset_index()
+    order = meta.pop('index').to_numpy()
+    X = {q: np.asarray(blocks[q])[order] for q in QoIs}
     return meta, X
 
 
@@ -108,21 +174,30 @@ class PODSurrogate:
     optimisation rather than a 256-seed random draw.
     """
 
-    def __init__(self, n_modes=5, log_x=True, n_restarts=6, random_state=0):
+    def __init__(self, n_modes=5, features=('h', 'r', 'x'), log_cols=('x',),
+                 n_restarts=6, random_state=0):
+        """features : meta columns used as GP inputs.
+
+        Downstream surrogate: ('h', 'r', 'x') with x on a log scale, since the
+        sampling stations are logarithmically spaced.  Upstream surrogate:
+        ('h', 'n') with no log, the row index being uniformly spaced.
+        """
         self.n_modes = n_modes
-        self.log_x = log_x
+        self.features = tuple(features)
+        self.log_cols = tuple(c for c in log_cols if c in self.features)
         self.n_restarts = n_restarts
         self.random_state = random_state
 
     # -- input handling ----------------------------------------------------
     def _raw(self, meta):
-        Z = np.column_stack([
-            np.asarray(meta['h'], dtype=float),
-            np.asarray(meta['r'], dtype=float),
-            np.log(np.asarray(meta['x'], dtype=float)) if self.log_x
-            else np.asarray(meta['x'], dtype=float),
-        ])
-        return Z
+        cols = []
+        for c in self.features:
+            v = np.asarray(meta[c], dtype=float)
+            cols.append(np.log(v) if c in self.log_cols else v)
+        return np.column_stack(cols)
+
+    def _feature_names(self):
+        return [f'log {c}' if c in self.log_cols else c for c in self.features]
 
     def _scale(self, Z):
         return (Z - self._zmean) / self._zstd
@@ -176,10 +251,9 @@ class PODSurrogate:
 
     def length_scales(self):
         """Fitted ARD length scales per mode, as a tidy DataFrame."""
-        names = ['h', 'log x' if self.log_x else 'x']
-        names.insert(1, 'r')
+        names = self._feature_names()
         out = []
         for k, g in enumerate(self.gprs):
-            ls = g.kernel_.k1.k2.length_scale
-            out.append(dict(zip(names, np.atleast_1d(ls))) | {'mode': k + 1})
+            ls = np.atleast_1d(g.kernel_.k1.k2.length_scale)
+            out.append(dict(zip(names, ls)) | {'mode': k + 1})
         return pd.DataFrame(out).set_index('mode')
