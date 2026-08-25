@@ -1,5 +1,8 @@
 .vscode/*
-__pycache__/*
+# a pattern containing a slash is anchored to this directory, so the old
+# "__pycache__/*" missed dev/__pycache__ and any other nested one
+__pycache__/
+.ipynb_checkpoints/
 *_geometric_*/*
 !/Images/*
 *.png
