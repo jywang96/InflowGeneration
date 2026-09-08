@@ -114,21 +114,68 @@ def check_alpha_operator(profile, eta_target, alphas, atol=1e-10):
     return worst
 
 
+def anchor_index(eta, y_ref, y_T):
+    """Index of the target point closest to the reference height.
+
+    y_ref is given in the same units as the target's y column; y_T is the top
+    of the target profile, so the normalised anchor is eta_ref = y_ref / y_T.
+    Asking the user for a physical height rather than a ratio avoids the trap
+    that eta_ref depends on how far above the building the target was
+    specified: the same 30 m building gives eta_ref = 0.667 for a target
+    reaching 1.5H and 0.5 for one reaching 2H.
+    """
+    eta_ref = float(y_ref) / float(y_T)
+    if not (eta.min() - 1e-9 <= eta_ref <= eta.max() + 1e-9):
+        raise ValueError(
+            f'reference height y_ref={y_ref} maps to eta_ref={eta_ref:.4f}, '
+            f'outside the target range [{eta.min():.4f}, {eta.max():.4f}]')
+    return int(np.argmin(np.abs(eta - eta_ref))), eta_ref
+
+
 def optimal_k(P, t, kmin=0.8, kmax=1.8):
-    """Closed-form least-squares velocity scaling, clipped to the search bounds.
+    """Least-squares velocity scale: the value minimising ||s_U p - t||.
 
     P : (N, n_t) candidate u profiles on the target grid
     t : (n_t,)   target u profile
 
-    k only multiplies the u objective and leaves the turbulence-intensity
-    objectives untouched, so the least-squares k dominates every other k for
-    the same (h, r, x, alpha) -- eliminating it costs no Pareto solutions.
+    Retained for diagnostics.  It is the smallest attainable velocity
+    residual, so the gap to the anchored scale measures what anchoring costs.
     """
     num = P @ t
     den = np.einsum('ij,ij->i', P, P)
     with np.errstate(divide='ignore', invalid='ignore'):
         k = np.where(den > 0, num / den, kmin)
     return np.clip(k, kmin, kmax), k
+
+
+def anchored_k(P, t, j, kmin=0.8, kmax=1.8):
+    """Velocity scale that makes candidate and target agree at index j.
+
+    Wind loading is reported as a coefficient normalised by the dynamic
+    pressure at the building height, so an error there enters the deliverable
+    twice over: C_p scales as U_ref^-2.  Fixing the amplitude at that height
+    removes a systematic bias from the quantity the simulation exists to
+    produce, at the cost of a slightly larger whole-profile residual.
+
+    Averaging the anchor over a window of neighbouring heights was tried and
+    abandoned: the surrogate error is smooth in y -- adjacent grid points
+    correlate at r = 0.996 -- so averaging correlated values reduces it by
+    0.4%, while blurring the property being enforced.
+    """
+    with np.errstate(divide='ignore', invalid='ignore'):
+        k = np.where(np.abs(P[:, j]) > 0, t[j] / P[:, j], kmin)
+    return np.clip(k, kmin, kmax), k
+
+
+def velocity_scale(P, t, mode='anchor', j=None, kmin=0.8, kmax=1.8):
+    """Dispatch: 'anchor' (delivered) or 'ls' (diagnostic)."""
+    if mode == 'anchor':
+        if j is None:
+            raise ValueError("mode='anchor' needs the anchor index j")
+        return anchored_k(P, t, j, kmin, kmax)
+    if mode == 'ls':
+        return optimal_k(P, t, kmin, kmax)
+    raise ValueError(f'unknown mode {mode!r}')
 
 
 def dominates(A, f):

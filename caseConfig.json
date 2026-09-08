@@ -1,4 +1,16 @@
 {
+  "_comment": [
+    "reference: the optimizer's solution.  h, r, x and alpha (= y^Max) are the",
+    "four decision variables; k is the velocity scale s_U, fixed by requiring",
+    "the candidate and the target to agree at y_ref rather than by a",
+    "least-squares fit over the whole profile.",
+    "y_ref is a height in the units of the target's y column, and defaults to",
+    "H_build.  It is not a ratio: the same building gives a different ratio",
+    "depending on how far above it the target profile was specified.",
+    "The former scaleFactors.Uscaling has been removed.  The physical velocity",
+    "written into the boundary conditions is s_U * U_target(y_T), which the",
+    "target file already determines."
+  ],
   "reference": {
     "fName": "LRB_Cat_B",
     "h": 0.07,
@@ -6,13 +18,12 @@
     "alpha": 0.34,
     "k": 1.62,
     "x": 0.6,
-    "hMatch": 0.666
+    "y_ref": 6.0
   },
   "scaleFactors": {
-    "scale": 7.555556,
-    "H_build": 6,
-    "Uscaling": 1
+    "scale": 1.0,
+    "H_build": 6
   },
-  "wDomain": 6.0,
+  "wDomain": 3.0,
   "plotABL": true
 }

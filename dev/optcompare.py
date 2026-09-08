@@ -29,7 +29,8 @@ from pymoo.algorithms.moo.nsga2 import NSGA2                     # noqa: E402
 from pymoo.core.problem import Problem                           # noqa: E402
 from pymoo.optimize import minimize                              # noqa: E402
 
-from common import Y_GRID, alpha_operator, optimal_k             # noqa: E402
+from common import (Y_GRID, alpha_operator, optimal_k,            # noqa: E402
+                    anchor_index, velocity_scale)
 import gridsearch as gs                                          # noqa: E402
 
 
@@ -66,15 +67,31 @@ def load_cache(path):
 
 
 class CachedObjective:
-    """Score any (h, r, x, alpha, k) against a target, from cached profiles."""
+    """Score any (h, r, x, alpha) against a target, from cached profiles.
 
-    def __init__(self, cache, target, QoIs, kBounds=(0.8, 1.8)):
+    The velocity scale is not searched.  By default it is fixed by requiring
+    the candidate and the target to agree at the reference height y_ref, which
+    defaults to the building height: the target spans [0.2H, 1.5H], so
+    y_T = 1.5H and y_ref = y_T / 1.5.  Pass mode='ls' to recover the
+    least-squares scale instead, which is the diagnostic lower bound.
+    """
+
+    def __init__(self, cache, target, QoIs, kBounds=(0.8, 1.8),
+                 mode='anchor', y_ref=None, y_T=None):
         self.c = cache
         self.QoIs = list(QoIs)
         self.kBounds = kBounds
+        self.mode = mode
         self.eta = target['y'].to_numpy()
         self.T = {q: target[q].to_numpy() for q in self.QoIs}
         self._M = {}
+
+        # eta is already y / y_T, so working in normalised units the default
+        # anchor is simply 1/1.5.
+        if y_ref is None or y_T is None:
+            self.j, self.eta_ref = int(np.argmin(np.abs(self.eta - 1 / 1.5))), 1 / 1.5
+        else:
+            self.j, self.eta_ref = anchor_index(self.eta, y_ref, y_T)
 
         HR = cache['HR']
         self.hVals = np.unique(HR[:, 0])
@@ -99,7 +116,8 @@ class CachedObjective:
         P = {q: M @ self.c['Q'][x][q][i] for q in self.QoIs}
 
         if k is None and 'u' in self.QoIs:
-            kk, _ = optimal_k(P['u'][None, :], self.T['u'], *self.kBounds)
+            kk, _ = velocity_scale(P['u'][None, :], self.T['u'], self.mode,
+                                   self.j, *self.kBounds)
             k = float(kk[0])
         elif k is None:
             k = 1.0
@@ -155,7 +173,8 @@ def run_grid(obj, xList, alphaGrid, hGrid=gs.H_GRID, rGrid=gs.R_GRID):
         for a in alphaGrid:
             M = obj.M(a)
             P = {q: Q[q] @ M.T for q in obj.QoIs}
-            k, k_raw = optimal_k(P['u'], obj.T['u'], *obj.kBounds)
+            k, k_raw = velocity_scale(P['u'], obj.T['u'], obj.mode,
+                                      obj.j, *obj.kBounds)
             blk = {'$h$': HR[:, 0], '$r$': HR[:, 1], '$x$': np.full(n, x),
                    r'$\alpha$': np.full(n, a), r'$k$': k, 'k_unclipped': k_raw}
             for q in obj.QoIs:

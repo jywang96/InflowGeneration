@@ -142,19 +142,45 @@ print(comp.to_string())
 fig, axes = plt.subplots(1, 3, figsize=(16, 5))
 for a, (qa, qb) in zip(axes, [('u', 'Iu'), ('u', 'Iw'), ('Iu', 'Iv')]):
     a.scatter(grid[qa], grid[qb], s=1, alpha=.04, color='tab:grey',
-              rasterized=True, label='grid (all)')
+              rasterized=True, label='grid (all points)')
+
+    # 2-D Pareto front of the projection: sweep in qa keeping every new
+    # minimum of qb.  Drawn as a staircase -- for a discrete point set the
+    # attainable set is bounded by steps, and joining the points diagonally
+    # would run the line through unattainable territory.
     sub = grid[[qa, qb]].to_numpy()
     keep = []
     for i in np.argsort(sub[:, 0]):
         if not keep or sub[i, 1] < sub[keep[-1], 1]:
             keep.append(i)
-    a.plot(sub[keep, 0], sub[keep, 1], '-', color='tab:blue', lw=2,
-           label='grid front')
+    front = sub[keep]
+    a.plot(front[:, 0], front[:, 1], color='tab:blue', lw=2,
+           drawstyle='steps-post', label='grid front (2-D projection)')
+    a.plot(front[-1, 0], front[-1, 1], 'o', ms=6, mfc='none', mec='tab:blue',
+           mew=1.6)
+    a.annotate(f'front ends here:\nglobal min of {qb}',
+               xy=(front[-1, 0], front[-1, 1]),
+               xytext=(0.42, 0.30), textcoords='axes fraction', fontsize=8,
+               color='tab:blue',
+               arrowprops=dict(arrowstyle='->', color='tab:blue', lw=.9))
+
     a.scatter(nsga_F[qa], nsga_F[qb], s=26, color='tab:red', zorder=5,
-              label='NSGA-II')
-    a.set_xlabel(f'RMSE {qa}'); a.set_ylabel(f'RMSE {qb}')
-axes[0].legend(frameon=False)
-fig.suptitle(f'{FNAME} -- identical surrogate, identical objective')
+              label='NSGA-II front')
+
+    # The scatter spans the whole space, most of it badly dominated, which
+    # would compress the interesting region into a corner.  Frame on the
+    # fronts instead.
+    hi_a = max(front[:, 0].max(), nsga_F[qa].max())
+    hi_b = max(front[:, 1].max(), nsga_F[qb].max())
+    lo_a, lo_b = front[:, 0].min(), front[:, 1].min()
+    a.set_xlim(lo_a - 0.04 * (hi_a - lo_a), hi_a + 0.10 * (hi_a - lo_a))
+    a.set_ylim(lo_b - 0.04 * (hi_b - lo_b), hi_b + 0.10 * (hi_b - lo_b))
+    a.set_xlabel(f'RMSE {qa}')
+    a.set_ylabel(f'RMSE {qb}')
+axes[0].legend(frameon=False, fontsize=8, loc='upper right')
+fig.suptitle(f'{FNAME} -- identical surrogate, identical objective.  '
+             'Dominance is assessed in the full 4-objective space; '
+             'these panels are projections.')
 plt.tight_layout()
 plt.savefig(f'{FIGDIR}/{FNAME}_optimiser_fronts.png', dpi=140,
             bbox_inches='tight')

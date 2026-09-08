@@ -97,7 +97,26 @@ scale = scaleFactors['scale']
 #HABL = 240.0
 H_build = scaleFactors['H_build']
 HABL = H_build * 1.5
-Uscaling = scaleFactors['Uscaling']
+
+# --- velocity scale -------------------------------------------------------
+# The surrogate returns dimensionless profiles, u / U_inf.  Writing the inlet
+# boundary condition as q(y) * V makes every velocity in the simulation
+# proportional to V, so the ABL at the building is p_U(eta) * V.  Requiring
+# that it equal the target at the reference height,
+#
+#     p_U(eta_ref) * V = U_target(y_ref)      =>      V = s_U * U_target(y_T)
+#
+# with s_U = t_U(eta_ref) / p_U(eta_ref) the dimensionless scale the optimizer
+# reports.  U_target(y_T) is a property of the target profile, not a free
+# parameter, which is why the former 'Uscaling' entry has been removed from
+# caseConfig.json: it was a user-set constant standing in for a quantity the
+# target file already determines.
+#
+# 'y_ref' is given in the units of the target's y column and defaults to the
+# building height.  Do not ask the user for the ratio y_ref / y_T: the same
+# building gives a different ratio depending on how far above it the target
+# profile was specified.
+y_ref = reference.get('y_ref', H_build)
 
 scaling = HABL*scale/reference['alpha']
 caseDirectory = './'+reference['fName']+'_geometric_1to'+str(np.round(1.0/scale).astype(int))
@@ -141,20 +160,24 @@ def plotABL(reference, save=False):
     yref     = ref_abl['y'].iloc[idx]
     ref_abl['y'] = ref_abl['y'] / yref
 
-    # -- Initial GPR 'u' prediction to compute Uscaling (plot only) --
+    # -- Check the anchoring: after scaling by s_U the candidate and the
+    #    target must agree at y_ref, by construction of the optimizer.
+    eta_ref  = y_ref / yref
     model    = '../GPRModels/'+directory+'_u.pkl'
     y_mean   = gp.predict(model, fit_features, features, 'u')
     y_mean   = y_mean.loc[y_mean['y'] <= reference['alpha'] * y_mean['y'].max()]
     y_mean['y'] = y_mean['y'] / y_mean['y'].max()
 
-    U_ABL_dim = interp1d(ref_abl['y'], ref_abl['u'])(reference['hMatch']).item()
-    U_TIG_dim = interp1d(y_mean['y'],  y_mean['y_model'])(reference['hMatch']).item()
-    # Uscaling  = U_ABL_dim / U_TIG_dim * yref / reference['alpha']
+    U_ABL_nd = interp1d(ref_abl['y'], ref_abl['u'] / ref_abl['u'].iloc[idx])(eta_ref).item()
+    U_TIG_nd = interp1d(y_mean['y'],  y_mean['y_model'])(eta_ref).item()
+    mismatch = reference['k'] * U_TIG_nd / U_ABL_nd - 1.0
 
-    # -- Print scaling summary for the plot --
-    # print('Scaling velocity from GPR to reference ABL:', np.round(Uscaling,3), 'm/s')
-    print('Reference velocity at', np.round(reference['hMatch']*yref,3),
-          'm:', np.round(U_ABL_dim,3), 'm/s')
+    print(f'anchor: y_ref = {y_ref:.3f} m  (eta_ref = {eta_ref:.4f})')
+    print(f'        target {U_ABL_nd:.4f}  vs  s_U * candidate '
+          f'{reference["k"] * U_TIG_nd:.4f}   mismatch {100*mismatch:+.3f}%')
+    if abs(mismatch) > 5e-3:
+        print('        WARNING: s_U in caseConfig.json does not anchor this '
+              'target at y_ref; re-run the optimizer or check y_ref.')
 
     # -- Configure figure and plot profiles --
     plt.figure(figsize=(2260/my_dpi, 1300/my_dpi), dpi=my_dpi)
@@ -173,7 +196,7 @@ def plotABL(reference, save=False):
         if QoI == 'u':
             y_mean['y_model'] = y_mean['y_model']*reference['k']
             y_mean['y_std'] = y_mean['y_std']*reference['k']
-            print(f"For ABL plot, U scaled by {reference['k']:.3f} m/s, or {Uscaling*reference['k']:.3f} m/s in simulation space")
+            print(f"For ABL plot, U scaled by s_U = {reference['k']:.3f}")
             
         plt.subplot(1,4,cont)
         
@@ -226,6 +249,20 @@ yMax = 1.5 # [m] Height of the GPR downstream fit (not yMax in the paper)
 # redefine yMax to extend the vertical normalization range for inflow generation
         
 # ===== Inflow Profile Generation & Export =====
+# Anchor the velocity scale on the target at y_ref, then convert to physical
+# units.  Both steps use the same number, so the profiles are multiplied once.
+ref_abl_dim = pd.read_csv('TestCases/' + reference['fName'] + '.dat', sep=',')
+_idx  = int(np.argmax(ref_abl_dim['y'].to_numpy()))
+y_T   = float(ref_abl_dim['y'].iloc[_idx])
+U_yT  = float(ref_abl_dim['u'].iloc[_idx])
+U_ref = float(interp1d(ref_abl_dim['y'], ref_abl_dim['u'])(y_ref))
+
+Vinlet = reference['k'] * U_yT
+print(f'target: y_T = {y_T:.3f}, U(y_T) = {U_yT:.3f} m/s, '
+      f'y_ref = {y_ref:.3f}, U(y_ref) = {U_ref:.3f} m/s')
+print(f'velocity multiplier applied to the boundary conditions: '
+      f'{Vinlet:.3f} m/s   (= s_U * U(y_T), s_U = {reference["k"]:.3f})')
+
 plt.figure(figsize=(2260/my_dpi, 1300/my_dpi), dpi=my_dpi)
 for x in [-4.95, -2.85]:
     # Reinitialize GPR for a new inflow plane at x
@@ -266,11 +303,11 @@ for x in [-4.95, -2.85]:
         y_mean['y'] = y_mean['y']/(y_mean['y'].max())
         
         if QoI == 'u':
-            y_mean['y_model'] = y_mean['y_model']*Uscaling * reference['k']
-            y_mean['y_std'] = y_mean['y_std']*Uscaling * reference['k']
+            y_mean['y_model'] = y_mean['y_model']*Vinlet
+            y_mean['y_std'] = y_mean['y_std']*Vinlet
         else:
-            y_mean['y_model'] = y_mean['y_model']*(Uscaling*reference['k'])**2
-            y_mean['y_std'] = y_mean['y_std']*(Uscaling*reference['k'])**2
+            y_mean['y_model'] = y_mean['y_model']*Vinlet**2
+            y_mean['y_std'] = y_mean['y_std']*Vinlet**2
             
         plt.subplot(2,3,cont)
         
