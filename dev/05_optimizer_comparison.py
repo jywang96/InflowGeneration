@@ -57,7 +57,7 @@ VARS = {r'$h$': [0.035, 0.1649], r'$r$': [51.5, 92.49],
 
 # %%
 cache = oc.load_cache(CACHE)
-target, header, Uref, yref = load_target(FNAME)
+target, header, U_ref, y_T, y_ref = load_target(FNAME)
 obj = oc.CachedObjective(cache, target, QOIS)
 
 print(f'{len(cache["xList"])} stations, {len(cache["HR"])} (h,r) pairs '

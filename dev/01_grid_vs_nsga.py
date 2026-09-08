@@ -53,9 +53,10 @@ print(f'x {len(ALPHA_GRID)} alpha = '
 # ## 1. Target and the published NSGA-II result
 
 # %%
-target, header, Uref, yref = load_target(FNAME)
+target, header, U_ref, y_T, y_ref = load_target(FNAME)
 print(f'target spans y/y_T in [{target["y"].min():.4f}, {target["y"].max():.4f}]'
-      f'  ({len(target)} points),  U_ref = {Uref:.3f} m/s,  y_T = {yref:.3f} m')
+      f'  ({len(target)} points),  y_T = {y_T:.3f} m,  '
+      f'y_ref = {y_ref:.3f} m,  U(y_ref) = {U_ref:.3f} m/s')
 
 nsga_F = pd.read_csv(f'TestCases/{FNAME}_pareto_front.csv')
 nsga_X = pd.read_csv(f'TestCases/{FNAME}_decision_variables.csv')

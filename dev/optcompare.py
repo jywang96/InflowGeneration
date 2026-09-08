@@ -76,7 +76,7 @@ class CachedObjective:
     least-squares scale instead, which is the diagnostic lower bound.
     """
 
-    def __init__(self, cache, target, QoIs, kBounds=(0.8, 1.8),
+    def __init__(self, cache, target, QoIs, kBounds=(None, None),
                  mode='anchor', y_ref=None, y_T=None):
         self.c = cache
         self.QoIs = list(QoIs)

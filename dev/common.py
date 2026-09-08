@@ -14,6 +14,7 @@ import sys
 
 import numpy as np
 import pandas as pd
+from scipy.interpolate import interp1d
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -32,22 +33,48 @@ Y_GRID = np.unique(
 FEATURES = ['y', 'h', 'r']
 
 
-def load_target(fName, testcases='./TestCases'):
-    """Read and normalise a target ABL exactly as optimizeParameters.py does."""
+def load_target(fName, testcases='./TestCases', y_ref=None):
+    """Read a target ABL and normalise it on the reference height.
+
+    The vertical coordinate is normalised by the top of the profile, y_T, and
+    the velocity by its value at the reference height, so that
+
+        t_U(eta_ref) == 1   by construction.
+
+    Normalising on y_ref rather than on y_T matters for two reasons.  It is
+    the convention of the field -- wind loads are reported against the dynamic
+    pressure at the building height -- and it removes a bookkeeping layer: the
+    physical velocity written into the boundary conditions is
+    U_target(y_ref) / p_U(eta_ref), and expressing the target in units of
+    U_target(y_T) only to divide it out again obscures that.
+
+    y_ref is a height in the units of the file's y column and defaults to the
+    building height, y_T / 1.5, the targets being specified over [0.2H, 1.5H].
+
+    Returns (ref, header, U_ref, y_T, y_ref) where U_ref = U_target(y_ref) is
+    the velocity that sets the dimensional scale of the delivered case.
+    """
     ref = pd.read_csv(os.path.join(testcases, fName + '.dat'), sep=',')
     header = list(ref.columns)
     idx = int(np.argmax(ref['y'].to_numpy()))
+    y_T = 1.0 * ref['y'].iloc[idx]
 
-    Uref = 1.0 * ref['u'].iloc[idx]
-    yref = 1.0 * ref['y'].iloc[idx]
+    if y_ref is None:
+        y_ref = y_T / 1.5
+    if not (ref['y'].min() - 1e-9 <= y_ref <= y_T + 1e-9):
+        raise ValueError(
+            f'y_ref={y_ref} lies outside the target range '
+            f'[{ref["y"].min():.4f}, {y_T:.4f}]')
 
-    ref['y'] = ref['y'] / yref
-    ref['u'] = ref['u'] / Uref
+    U_ref = float(interp1d(ref['y'], ref['u'])(y_ref))
+
+    ref['y'] = ref['y'] / y_T
+    ref['u'] = ref['u'] / U_ref
     for rsc in ['uu', 'vv', 'ww', 'uv', 'uw', 'vw']:
         if rsc in header:
-            ref[rsc] = ref[rsc] / (Uref ** 2)
+            ref[rsc] = ref[rsc] / (U_ref ** 2)
 
-    return ref, header, Uref, yref
+    return ref, header, U_ref, y_T, y_ref
 
 
 def interp_matrix(src_y, query_y):
@@ -132,7 +159,23 @@ def anchor_index(eta, y_ref, y_T):
     return int(np.argmin(np.abs(eta - eta_ref))), eta_ref
 
 
-def optimal_k(P, t, kmin=0.8, kmax=1.8):
+def _clip(k, kmin, kmax):
+    """Bounds are optional and off by default.
+
+    The interval [0.8, 1.8] was inherited from the era when the velocity scale
+    was a search variable and needed a box for the genetic algorithm.  It no
+    longer serves a purpose: s_U is computed, not searched, and under
+    Reynolds-number similarity any positive value is admissible.  Worse, the
+    interval was calibrated against the old normalisation by U_target(y_T);
+    normalising on U_target(y_ref) rescales s_U by U_target(y_T)/U_target(y_ref)
+    and the old ceiling starts truncating legitimate solutions.
+    """
+    if kmin is None and kmax is None:
+        return k
+    return np.clip(k, kmin, kmax)
+
+
+def optimal_k(P, t, kmin=None, kmax=None):
     """Least-squares velocity scale: the value minimising ||s_U p - t||.
 
     P : (N, n_t) candidate u profiles on the target grid
@@ -144,11 +187,11 @@ def optimal_k(P, t, kmin=0.8, kmax=1.8):
     num = P @ t
     den = np.einsum('ij,ij->i', P, P)
     with np.errstate(divide='ignore', invalid='ignore'):
-        k = np.where(den > 0, num / den, kmin)
-    return np.clip(k, kmin, kmax), k
+        k = np.where(den > 0, num / den, 0.0)
+    return _clip(k, kmin, kmax), k
 
 
-def anchored_k(P, t, j, kmin=0.8, kmax=1.8):
+def anchored_k(P, t, j, kmin=None, kmax=None):
     """Velocity scale that makes candidate and target agree at index j.
 
     Wind loading is reported as a coefficient normalised by the dynamic
@@ -163,11 +206,11 @@ def anchored_k(P, t, j, kmin=0.8, kmax=1.8):
     0.4%, while blurring the property being enforced.
     """
     with np.errstate(divide='ignore', invalid='ignore'):
-        k = np.where(np.abs(P[:, j]) > 0, t[j] / P[:, j], kmin)
-    return np.clip(k, kmin, kmax), k
+        k = np.where(np.abs(P[:, j]) > 0, t[j] / P[:, j], 0.0)
+    return _clip(k, kmin, kmax), k
 
 
-def velocity_scale(P, t, mode='anchor', j=None, kmin=0.8, kmax=1.8):
+def velocity_scale(P, t, mode='anchor', j=None, kmin=None, kmax=None):
     """Dispatch: 'anchor' (delivered) or 'ls' (diagnostic)."""
     if mode == 'anchor':
         if j is None:

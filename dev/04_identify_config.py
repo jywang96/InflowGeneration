@@ -84,7 +84,7 @@ for t in TESTIDS:
 # ## 2. The published rows we are trying to reproduce
 
 # %%
-target, header, Uref, yref = load_target(FNAME)
+target, header, U_ref, y_T, y_ref = load_target(FNAME)
 pub_all = pd.read_csv(f'TestCases/{FNAME}_pareto_front.csv')
 dec_all = pd.read_csv(f'TestCases/{FNAME}_decision_variables.csv')
 

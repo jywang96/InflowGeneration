@@ -80,7 +80,7 @@ Y_INT = np.array(oc.load_cache(CACHE)['HR'])          # touch, keeps linters qui
 results = {}
 for _, row in PUBLISHED.iterrows():
     fname = f'{row.bldg}_Cat_{row.terrain}'
-    target, _, Uref, yref = load_target(fname)
+    target, _, U_ref, y_T, y_ref = load_target(fname)
     obj = oc.CachedObjective(cache, target, QOIS)
 
     grid = oc.run_grid(obj, cache['xList'], ALPHA_GRID)
