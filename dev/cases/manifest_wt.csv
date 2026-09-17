@@ -1,0 +1,3 @@
+case,h,r,x_B,y_Max,s_U,scale_factor,y_T,U_yT,Vinlet,s_y,geometric_factor,building_scale,n_inlet,n_alf,velocity_is_dimensional,BLOCKED
+TPU,0.04,52,1.8,0.575,1.2051221445502045,1.0,0.699,1.11,1.337685580450727,1.2156521739130435,1.0,1:1.2,45,52,False,"the target's velocity column is normalised, so Vinlet above is dimensionless.  Multiply every velocity by the tunnel reference wind speed at y_ref, and every Reynolds stress by its square, before running.  See HANDOVER 23."
+WoW,0.06,92,0.6,0.325,1.857058372137774,1.0,0.4,17.09737326378426,31.750820161075097,1.2307692307692308,1.0,1:1.2,85,92,True,
