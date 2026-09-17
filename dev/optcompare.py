@@ -58,6 +58,69 @@ def build_cache(path, xList=gs.X_LIST, QoIs=gs.QOIS, hGrid=gs.H_GRID,
     return load_cache(path)
 
 
+def build_cache_pod(path, xList=gs.X_LIST, QoIs=gs.QOIS, hGrid=gs.H_GRID,
+                    rGrid=gs.R_GRID, n_modes=5, verbose=True):
+    """Same cache structure as build_cache, from the POD+GPR surrogate.
+
+    `build_cache` reads the superseded point-wise pickles in ../GPRModels, one
+    model per (QoI, station).  This builds the byte-compatible dictionary from
+    the reduced-order surrogate the paper actually describes, so
+    `CachedObjective`, `run_grid` and `run_nsga` need no change.
+
+    Two grids must not be confused.  Training uses all 19 sampled stations,
+    `hyperparametersGPR.xList`, because every profile in the database is data.
+    Enumeration uses the 18 of `gs.X_LIST`, which excludes x_B = 0.3 m: that
+    station sits inside the canopy wake and was never offered as a candidate
+    building location.  Since x_B is a regression input rather than a model
+    index, one surrogate per QoI covers both.
+
+    Profiles are produced on Y_GRID, the 399-point grid `alpha_operator`
+    expects, not on the coarser grid `export_figdata.py` uses for plotting.
+    """
+    if os.path.exists(path):
+        if verbose:
+            print(f'reusing {path}')
+        return load_cache(path)
+
+    from hyperparametersGPR import trainPairs, xList as xTrain   # noqa
+    import podlib as pl                                          # noqa
+    from common import Y_GRID                                    # noqa
+
+    t0 = time.time()
+    meta_tr, X_tr = pl.build_snapshots(trainPairs, list(xTrain), QoIs, Y_GRID)
+    if verbose:
+        print(f'snapshots: {len(meta_tr)} profiles x {len(Y_GRID)} points '
+              f'({time.time() - t0:.1f}s)')
+
+    HR = np.array([(h, r) for h in hGrid for r in rGrid], dtype=float)
+    grid = pd.DataFrame({
+        'h': np.tile(HR[:, 0], len(xList)),
+        'r': np.tile(HR[:, 1], len(xList)),
+        'x': np.repeat(np.asarray(xList, dtype=float), len(HR)),
+    })
+
+    store = {}
+    for q in QoIs:
+        t0 = time.time()
+        sur = pl.PODSurrogate(n_modes=n_modes).fit(meta_tr, X_tr[q], Y_GRID)
+        P = sur.predict(grid)
+        for ix, x in enumerate(xList):
+            store[f'{x}|{q}'] = \
+                P[ix * len(HR):(ix + 1) * len(HR)].astype(np.float32)
+        if verbose:
+            # n_modes is a ceiling: PODSurrogate truncates at the first mode
+            # whose ARD length scale reaches a bound (M-11 / 19.6).
+            print(f'  {q:<3} M={sur.n_modes_used}  E_M={sur.E_M():.6f}  '
+                  f'e_trunc={sur.truncation_error(X_tr[q]):.4e}  '
+                  f'e_tot={sur.total_error(meta_tr, X_tr[q]):.4e}  '
+                  f'({time.time() - t0:.1f}s)'
+                  + (f'  dropped {sur.dropped}' if sur.dropped else ''))
+
+    np.savez_compressed(path, HR=HR, xList=np.array(xList),
+                        QoIs=np.array(QoIs, dtype=object), **store)
+    return load_cache(path)
+
+
 def load_cache(path):
     z = np.load(path, allow_pickle=True)
     xList = [float(v) for v in z['xList']]

@@ -8,3 +8,6 @@ __pycache__/
 *.png
 # derived artefacts: surrogate caches are rebuilt by optcompare.build_cache
 *.npz
+
+# transfer snapshot of dev/cases, rebuilt by dev/12_make_cases.py
+dev/cases_*.tar.gz

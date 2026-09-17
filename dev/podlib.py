@@ -174,19 +174,44 @@ class PODSurrogate:
     optimisation rather than a 256-seed random draw.
     """
 
+    LS_BOUNDS = (1e-2, 1e3)
+
     def __init__(self, n_modes=5, features=('h', 'r', 'x'), log_cols=('x',),
-                 n_restarts=6, random_state=0):
+                 n_restarts=6, random_state=0, drop_degenerate=True,
+                 ls_margin=0.05):
         """features : meta columns used as GP inputs.
 
         Downstream surrogate: ('h', 'r', 'x') with x on a log scale, since the
         sampling stations are logarithmically spaced.  Upstream surrogate:
         ('h', 'n') with no log, the row index being uniformly spaced.
+
+        drop_degenerate : truncate at the first mode whose fitted ARD length
+            scale reaches a bound of `LS_BOUNDS`.  A length scale at its lower
+            bound means the process has stopped interpolating in that input
+            and is fitting the mode as noise; retaining it adds a
+            noise-driven term to the reconstruction.  `n_modes` is therefore
+            a ceiling rather than an exact count.
+
+            Truncation is a *prefix*: the first offending mode and everything
+            after it are dropped.  Dropping an interior mode would leave the
+            retained set no longer the leading-M subspace, which is what the
+            Eckart-Young-Mirsky optimality of the basis rests on.
+
+        ls_margin : a length scale counts as degenerate when it sits within
+            this fraction of the *logarithmic* width of `LS_BOUNDS` of either
+            end.  The bounds span five decades and scikit-learn optimises the
+            log length scale, so proximity has to be measured in decades: on
+            the default bounds a fitted 0.013 is 2.3 per cent of the way up
+            from the lower bound, which a plain multiplicative test would call
+            30 per cent clear of it and miss.
         """
         self.n_modes = n_modes
         self.features = tuple(features)
         self.log_cols = tuple(c for c in log_cols if c in self.features)
         self.n_restarts = n_restarts
         self.random_state = random_state
+        self.drop_degenerate = drop_degenerate
+        self.ls_margin = ls_margin
 
     # -- input handling ----------------------------------------------------
     def _raw(self, meta):
@@ -212,19 +237,39 @@ class PODSurrogate:
 
         self.qbar, self.Phi, A, self.energy = pod(X, self.n_modes)
 
+        lo, hi = self.LS_BOUNDS
         kernel = (ConstantKernel(1.0, (1e-3, 1e3))
                   * Matern(length_scale=np.ones(Zs.shape[1]),
-                           length_scale_bounds=(1e-2, 1e3), nu=2.5)
+                           length_scale_bounds=self.LS_BOUNDS, nu=2.5)
                   + WhiteKernel(1e-6, (1e-12, 1e-1)))
 
         self.gprs = []
+        self.dropped = []
         for k in range(self.Phi.shape[1]):
             g = GaussianProcessRegressor(
                 kernel=kernel, normalize_y=True,
                 n_restarts_optimizer=self.n_restarts,
                 random_state=self.random_state)
             g.fit(Zs, A[:, k])
+
+            ls = np.atleast_1d(g.kernel_.k1.k2.length_scale)
+            frac = (np.log10(ls) - np.log10(lo)) / (np.log10(hi) - np.log10(lo))
+            at_bound = (frac <= self.ls_margin) | (frac >= 1.0 - self.ls_margin)
+            if self.drop_degenerate and at_bound.any():
+                names = self._feature_names()
+                self.dropped = [
+                    (k + 1, [(names[i], float(ls[i]))
+                             for i in np.flatnonzero(at_bound)])]
+                break
             self.gprs.append(g)
+
+        # Prefix truncation: keep the basis and the regressions the same size.
+        self.n_modes_used = len(self.gprs)
+        if self.n_modes_used == 0:
+            raise RuntimeError(
+                'every mode has a length scale at a bound; the inputs are '
+                'probably not informative for this QoI')
+        self.Phi = self.Phi[:, :self.n_modes_used]
         return self
 
     def coefficients(self, meta):
@@ -248,6 +293,10 @@ class PODSurrogate:
     def total_error(self, meta, X):
         """RMSE of the full surrogate (truncation + regression)."""
         return float(np.sqrt(np.mean((X - self.predict(meta)) ** 2)))
+
+    def E_M(self):
+        """Retained variance fraction at the number of modes actually used."""
+        return float(self.energy[self.n_modes_used - 1])
 
     def length_scales(self):
         """Fitted ARD length scales per mode, as a tidy DataFrame."""
